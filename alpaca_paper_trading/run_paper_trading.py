@@ -22,6 +22,7 @@ from alpaca_paper_trading.strategy_logic import (
     fetch_strategy_data,
     latest_reference_prices,
     signal_summary_dict,
+    use_completed_session_only,
 )
 
 
@@ -198,6 +199,11 @@ def build_runtime_context(args: argparse.Namespace) -> Dict[str, object]:
     current_spy_avg_entry_price = spy_position.avg_entry_price if spy_position else None
 
     data = fetch_strategy_data(start_date=args.start_date, end_date=args.end_date)
+    data = use_completed_session_only(
+        data=data,
+        current_timestamp=pd.Timestamp(clock.timestamp),
+        market_is_open=clock.is_open,
+    )
     signal = build_live_signal(
         data=data,
         account_value=account.equity,
