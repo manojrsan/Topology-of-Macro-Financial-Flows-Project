@@ -1,0 +1,6 @@
+alpaca-py
+numpy
+pandas
+yfinance
+pandas_datareader
+python-dotenv
