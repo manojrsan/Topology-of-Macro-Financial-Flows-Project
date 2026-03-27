@@ -11,6 +11,7 @@ from pandas_datareader import data as pdr
 START_DATE = "2006-01-01"
 DATA_TICKERS = ["SPY", "SHY", "DBC", "DBB", "DBA"]
 TRADE_TICKERS = ["SPY", "SHY"]
+LIVE_BUY_BUFFER = 1.001
 
 
 @dataclass
@@ -43,6 +44,30 @@ class LiveSignal:
 
 def next_business_day(ts: pd.Timestamp) -> pd.Timestamp:
     return ts + pd.offsets.BDay(1)
+
+
+def use_completed_session_only(
+    data: StrategyData,
+    current_timestamp: pd.Timestamp,
+    market_is_open: bool,
+) -> StrategyData:
+    if data.closes.empty:
+        raise ValueError("No price history available.")
+
+    current_session_date = pd.Timestamp(current_timestamp).tz_localize(None).normalize()
+    latest_data_date = pd.Timestamp(data.closes.index[-1]).normalize()
+
+    if market_is_open and latest_data_date >= current_session_date:
+        trimmed_opens = data.opens.iloc[:-1].copy()
+        trimmed_closes = data.closes.iloc[:-1].copy()
+        trimmed_dgs2 = data.dgs2.reindex(trimmed_closes.index)
+        if len(trimmed_closes.index) < 60:
+            raise ValueError(
+                "Insufficient completed-session history after dropping the in-progress trading day."
+            )
+        return StrategyData(opens=trimmed_opens, closes=trimmed_closes, dgs2=trimmed_dgs2)
+
+    return data
 
 
 def fetch_strategy_data(start_date: str = START_DATE, end_date: Optional[str] = None) -> StrategyData:
@@ -160,8 +185,9 @@ def compute_target_shares(
         price = reference_prices[ticker]
         if price <= 0:
             raise ValueError(f"Invalid reference price for {ticker}: {price}")
+        buffered_price = price * LIVE_BUY_BUFFER
         target_dollars = equity * target_weight
-        target_shares[ticker] = math.floor(target_dollars / price)
+        target_shares[ticker] = math.floor(target_dollars / buffered_price)
     return target_shares
 
 
