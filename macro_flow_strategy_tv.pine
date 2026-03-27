@@ -1,0 +1,130 @@
+//@version=6
+strategy(
+    "Macro Flow Strategy (TradingView Approximation)",
+    shorttitle="MacroFlowTV",
+    overlay=true,
+    pyramiding=0,
+    initial_capital=100000,
+    commission_type=strategy.commission.percent,
+    commission_value=0.0,
+    default_qty_type=strategy.percent_of_equity,
+    default_qty_value=100,
+    process_orders_on_close=false
+)
+
+// TradingView Strategy Tester runs on a single traded symbol.
+// This version is intended for a daily SPY chart and recreates the macro signal
+// using external series. The defensive SHY allocation from the Python backtest
+// is represented as flat cash because TradingView does not natively simulate a
+// true multi-asset SPY/SHY portfolio inside one strategy.
+//
+// Important approximation:
+// The Python model computes the signal at month-end close and executes at the
+// next trading day's open. In Pine on daily bars, month-end detection is most
+// reliable on the first trading day of the new month using the prior bar's data.
+// The strategy therefore submits rebalance orders on that first trading day.
+// Fill timing will follow TradingView's broker emulator rules, so results will
+// not exactly match the Python backtest.
+
+dbcSymbol = input.symbol("AMEX:DBC", "DBC Symbol")
+dbbSymbol = input.symbol("AMEX:DBB", "DBB Symbol")
+dbaSymbol = input.symbol("AMEX:DBA", "DBA Symbol")
+dgs2Symbol = input.symbol("FRED:DGS2", "DGS2 Symbol")
+showSignalMarkers = input.bool(true, "Show Rebalance Markers")
+
+dbcClose = request.security(dbcSymbol, timeframe.period, close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+dbbClose = request.security(dbbSymbol, timeframe.period, close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+dbaClose = request.security(dbaSymbol, timeframe.period, close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+dgs2Close = request.security(dgs2Symbol, timeframe.period, close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+spyClose = close
+
+retDBC = dbcClose / dbcClose[20] - 1.0
+retDBB = dbbClose / dbbClose[20] - 1.0
+retDBA = dbaClose / dbaClose[20] - 1.0
+chgDGS2 = dgs2Close - dgs2Close[20]
+ma50SPY = ta.sma(spyClose, 50)
+
+isNewMonth = ta.change(time("M")) != 0
+
+retDBCSignal = retDBC[1]
+retDBBSignal = retDBB[1]
+retDBASignal = retDBA[1]
+chgDGS2Signal = chgDGS2[1]
+ma50Signal = ma50SPY[1]
+spyCloseSignal = spyClose[1]
+
+hasHistory = not na(retDBCSignal) and not na(retDBBSignal) and not na(retDBASignal) and not na(chgDGS2Signal) and not na(ma50Signal) and not na(spyCloseSignal)
+
+score = (
+    (retDBCSignal > 0 ? 1 : 0) +
+    (retDBBSignal > 0 ? 1 : 0) +
+    (retDBASignal < 0 ? 1 : 0) +
+    (chgDGS2Signal < 0 ? 1 : 0))
+
+spyAboveMA50 = spyCloseSignal > ma50Signal
+
+float targetPct = 0.0
+if score == 4 and spyAboveMA50
+    targetPct := 100.0
+else if score == 3 and spyAboveMA50
+    targetPct := 50.0
+else
+    targetPct := 0.0
+
+if retDBCSignal <= -0.05
+    targetPct := 0.0
+
+var float modelTargetPct = 0.0
+var string lastSignalAction = "STAY_DEFENSIVE"
+
+stopPrice = strategy.position_size > 0 ? strategy.position_avg_price * 0.93 : na
+stopTriggered = strategy.position_size > 0 and not isNewMonth and close <= stopPrice
+
+if stopTriggered
+    strategy.close("SPY", comment="stop_loss")
+    modelTargetPct := 0.0
+
+rebalanceNow = isNewMonth and hasHistory
+if rebalanceNow
+    previousTargetPct = modelTargetPct
+    lastSignalAction := (
+        targetPct > previousTargetPct ? "BUY" :
+        targetPct < previousTargetPct and targetPct == 0.0 ? "EXIT" :
+        targetPct < previousTargetPct ? "REDUCE" :
+        targetPct == 0.0 ? "STAY_DEFENSIVE" : "HOLD")
+
+    if targetPct != modelTargetPct
+        if modelTargetPct > 0
+            strategy.close("SPY", comment="monthly_rebalance")
+        if targetPct > 0
+            strategy.entry("SPY", strategy.long, qty=targetPct, comment="monthly_rebalance")
+        modelTargetPct := targetPct
+
+plot(ma50SPY, "SPY MA50", color=color.orange, linewidth=2)
+plot(stopPrice, "Stop Price", color=color.red, linewidth=2, style=plot.style_linebr)
+
+bgcolor(targetPct == 100.0 ? color.new(color.green, 88) : targetPct == 50.0 ? color.new(color.yellow, 86) : color.new(color.gray, 90))
+
+plotshape(showSignalMarkers and rebalanceNow and targetPct == 100.0, title="Full Risk-On", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.tiny, text="100")
+plotshape(showSignalMarkers and rebalanceNow and targetPct == 50.0, title="Half Risk-On", style=shape.circle, location=location.belowbar, color=color.yellow, size=size.tiny, text="50")
+plotshape(showSignalMarkers and rebalanceNow and targetPct == 0.0, title="Defensive", style=shape.triangledown, location=location.abovebar, color=color.gray, size=size.tiny, text="0")
+plotshape(showSignalMarkers and stopTriggered, title="Stop Triggered", style=shape.xcross, location=location.abovebar, color=color.red, size=size.tiny, text="STOP")
+
+var table signalTable = table.new(position.top_right, 2, 8, border_width=1)
+if barstate.islast
+    table.cell(signalTable, 0, 0, "Score", text_color=color.white, bgcolor=color.rgb(33, 37, 41))
+    table.cell(signalTable, 1, 0, str.tostring(score))
+    table.cell(signalTable, 0, 1, "Target %", text_color=color.white, bgcolor=color.rgb(33, 37, 41))
+    table.cell(signalTable, 1, 1, str.tostring(targetPct, "#.0"))
+    table.cell(signalTable, 0, 2, "ret_DBC", text_color=color.white, bgcolor=color.rgb(33, 37, 41))
+    table.cell(signalTable, 1, 2, str.tostring(retDBCSignal * 100, "#.00") + "%")
+    table.cell(signalTable, 0, 3, "ret_DBB", text_color=color.white, bgcolor=color.rgb(33, 37, 41))
+    table.cell(signalTable, 1, 3, str.tostring(retDBBSignal * 100, "#.00") + "%")
+    table.cell(signalTable, 0, 4, "ret_DBA", text_color=color.white, bgcolor=color.rgb(33, 37, 41))
+    table.cell(signalTable, 1, 4, str.tostring(retDBASignal * 100, "#.00") + "%")
+    table.cell(signalTable, 0, 5, "chg_DGS2", text_color=color.white, bgcolor=color.rgb(33, 37, 41))
+    table.cell(signalTable, 1, 5, str.tostring(chgDGS2Signal, "#.00"))
+    table.cell(signalTable, 0, 6, "SPY > MA50", text_color=color.white, bgcolor=color.rgb(33, 37, 41))
+    table.cell(signalTable, 1, 6, spyAboveMA50 ? "true" : "false")
+    table.cell(signalTable, 0, 7, "Action", text_color=color.white, bgcolor=color.rgb(33, 37, 41))
+    table.cell(signalTable, 1, 7, lastSignalAction)
