@@ -2,3 +2,9 @@
 __pycache__/
 *.pyc
 outputs/
+.env
+alpaca_paper_trading/outputs/
+Accept:
+GET
+Host:
+User-Agent:
