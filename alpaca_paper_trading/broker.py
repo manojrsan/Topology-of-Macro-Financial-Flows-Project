@@ -85,7 +85,7 @@ class AlpacaPaperBroker:
         qty: int,
         client_order_id: str,
         wait_for_fill: bool = True,
-        timeout_seconds: int = 90,
+        timeout_seconds: int = 180,
     ) -> object:
         if qty <= 0:
             raise ValueError(f"Order quantity must be positive. Received {qty} for {symbol}.")
@@ -103,7 +103,7 @@ class AlpacaPaperBroker:
             return order
         return self.wait_for_fill(order.client_order_id, timeout_seconds=timeout_seconds)
 
-    def wait_for_fill(self, client_order_id: str, timeout_seconds: int = 90) -> object:
+    def wait_for_fill(self, client_order_id: str, timeout_seconds: int = 180) -> object:
         deadline = time.time() + timeout_seconds
         terminal_statuses = {"filled", "canceled", "expired", "rejected"}
         while time.time() < deadline:
