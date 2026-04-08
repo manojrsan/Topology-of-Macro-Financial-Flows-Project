@@ -1,6 +1,8 @@
 import math
+import time
 from dataclasses import asdict, dataclass
 from datetime import date
+from pathlib import Path
 from typing import Dict, Optional
 
 import pandas as pd
@@ -12,6 +14,8 @@ START_DATE = "2006-01-01"
 DATA_TICKERS = ["SPY", "SHY", "DBC", "DBB", "DBA"]
 TRADE_TICKERS = ["SPY", "SHY"]
 LIVE_BUY_BUFFER = 1.001
+FRED_RETRY_COUNT = 3
+FRED_RETRY_DELAY_SECONDS = 2
 
 
 @dataclass
@@ -70,7 +74,45 @@ def use_completed_session_only(
     return data
 
 
-def fetch_strategy_data(start_date: str = START_DATE, end_date: Optional[str] = None) -> StrategyData:
+def load_dgs2_with_retry_and_cache(
+    closes_index: pd.DatetimeIndex,
+    start_date: str,
+    end_date: str,
+    cache_dir: Optional[Path] = None,
+) -> pd.Series:
+    cache_path = None
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / "dgs2_cache.csv"
+
+    last_error: Optional[Exception] = None
+    for attempt in range(1, FRED_RETRY_COUNT + 1):
+        try:
+            dgs2 = pdr.DataReader("DGS2", "fred", start_date, end_date)["DGS2"]
+            dgs2 = pd.to_numeric(dgs2, errors="coerce")
+            if cache_path is not None:
+                dgs2.to_frame(name="DGS2").to_csv(cache_path)
+            return dgs2.reindex(closes_index).ffill()
+        except Exception as exc:
+            last_error = exc
+            if attempt < FRED_RETRY_COUNT:
+                time.sleep(FRED_RETRY_DELAY_SECONDS)
+
+    if cache_path is not None and cache_path.exists():
+        cached = pd.read_csv(cache_path, index_col=0, parse_dates=True)["DGS2"]
+        cached = pd.to_numeric(cached, errors="coerce")
+        return cached.reindex(closes_index).ffill()
+
+    raise RuntimeError(
+        f"Failed to download DGS2 from FRED after {FRED_RETRY_COUNT} attempts and no cache was available."
+    ) from last_error
+
+
+def fetch_strategy_data(
+    start_date: str = START_DATE,
+    end_date: Optional[str] = None,
+    cache_dir: Optional[Path] = None,
+) -> StrategyData:
     end_date = end_date or date.today().isoformat()
     prices = yf.download(
         tickers=DATA_TICKERS,
@@ -88,8 +130,12 @@ def fetch_strategy_data(start_date: str = START_DATE, end_date: Optional[str] = 
 
     opens = prices["Open"].reindex(columns=DATA_TICKERS).sort_index()
     closes = prices["Close"].reindex(columns=DATA_TICKERS).sort_index()
-    dgs2 = pdr.DataReader("DGS2", "fred", start_date, end_date)["DGS2"]
-    dgs2 = pd.to_numeric(dgs2, errors="coerce").reindex(closes.index).ffill()
+    dgs2 = load_dgs2_with_retry_and_cache(
+        closes_index=closes.index,
+        start_date=start_date,
+        end_date=end_date,
+        cache_dir=cache_dir,
+    )
 
     return StrategyData(opens=opens, closes=closes, dgs2=dgs2)
 
