@@ -85,6 +85,17 @@ def today_ts() -> pd.Timestamp:
     return pd.Timestamp.today().normalize()
 
 
+def compute_live_next_trade_date(signal_as_of_date: pd.Timestamp, clock: object) -> pd.Timestamp:
+    signal_date = pd.Timestamp(signal_as_of_date).tz_localize(None).normalize()
+    clock_timestamp = pd.Timestamp(clock.timestamp).tz_localize(None)
+    current_date = clock_timestamp.normalize()
+    next_open_date = pd.Timestamp(clock.next_open).tz_localize(None).normalize()
+
+    if clock.is_open and current_date > signal_date:
+        return current_date
+    return next_open_date
+
+
 def format_order(order: object) -> Dict[str, object]:
     return {
         "id": getattr(order, "id", None),
@@ -198,7 +209,11 @@ def build_runtime_context(args: argparse.Namespace) -> Dict[str, object]:
     current_spy_shares = int(round(spy_position.qty)) if spy_position else 0
     current_spy_avg_entry_price = spy_position.avg_entry_price if spy_position else None
 
-    data = fetch_strategy_data(start_date=args.start_date, end_date=args.end_date)
+    data = fetch_strategy_data(
+        start_date=args.start_date,
+        end_date=args.end_date,
+        cache_dir=output_dir / "cache",
+    )
     data = use_completed_session_only(
         data=data,
         current_timestamp=pd.Timestamp(clock.timestamp),
@@ -210,6 +225,7 @@ def build_runtime_context(args: argparse.Namespace) -> Dict[str, object]:
         current_spy_shares=current_spy_shares,
         current_spy_avg_entry_price=current_spy_avg_entry_price,
     )
+    signal.next_trade_date = compute_live_next_trade_date(signal.as_of_date, clock)
     reference_prices = latest_reference_prices(data)
     write_signal_outputs(signal, output_dir)
 
